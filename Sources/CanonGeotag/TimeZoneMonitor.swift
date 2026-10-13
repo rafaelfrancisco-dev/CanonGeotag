@@ -1,91 +1,59 @@
 import Foundation
 import Observation
+import UIKit
 import UserNotifications
 
-/// Tracks whether the camera's time zone setting still matches the phone.
+/// Tracks whether the paired camera's time zone setting still matches the phone.
 ///
 /// Location packets carry absolute UTC time, so geotags are always correct.
 /// The camera's own clock and time zone (EXIF `DateTimeOriginal`/`OffsetTime`)
 /// can't be set over Bluetooth, though, so after travelling or a daylight
 /// saving change the user has to update *Date/Time/Zone* on the camera. This
-/// detects that and reminds them. Significant location changes wake the app
-/// after arriving somewhere new, which is when `check()` runs.
+/// detects that and reminds them.
 @Observable
 final class TimeZoneMonitor {
-    nonisolated struct Zone: Equatable, Sendable {
-        let identifier: String
-        let secondsFromGMT: Int
+    /// UTC offset the camera is assumed to be set to; `nil` when no camera is paired.
+    private(set) var cameraOffset: Int?
+    private(set) var phoneZone = TimeZone.current
 
-        static var current: Zone {
-            let zone = TimeZone.current
-            return Zone(identifier: zone.identifier, secondsFromGMT: zone.secondsFromGMT())
-        }
-
-        var offsetText: String {
-            let hours = secondsFromGMT / 3600
-            let minutes = abs(secondsFromGMT % 3600) / 60
-            let sign = secondsFromGMT < 0 ? "−" : "+"
-            return minutes == 0 ? "UTC\(sign)\(abs(hours))" : "UTC\(sign)\(abs(hours)):\(String(format: "%02d", minutes))"
-        }
-
-        var cityName: String {
-            identifier.split(separator: "/").last.map { String($0).replacing("_", with: " ") } ?? identifier
-        }
+    var needsCameraUpdate: Bool {
+        cameraOffset.map { $0 != phoneZone.secondsFromGMT() } ?? false
     }
-
-    /// The zone the camera is assumed to be set to.
-    private(set) var cameraZone: Zone
-    private(set) var phoneZone: Zone = .current
-
-    /// Only the offset matters to the camera's clock.
-    var needsCameraUpdate: Bool { cameraZone.secondsFromGMT != phoneZone.secondsFromGMT }
 
     @ObservationIgnored private let defaults = UserDefaults.standard
 
     private enum Keys {
-        static let cameraZoneID = "cameraTimeZoneID"
         static let cameraOffset = "cameraTimeZoneOffset"
         static let notifiedOffset = "notifiedTimeZoneOffset"
     }
 
     init() {
-        if let identifier = defaults.string(forKey: Keys.cameraZoneID) {
-            cameraZone = Zone(identifier: identifier, secondsFromGMT: defaults.integer(forKey: Keys.cameraOffset))
-        } else {
-            cameraZone = .current
-        }
+        cameraOffset = defaults.object(forKey: Keys.cameraOffset) as? Int
     }
 
-    /// Call when a camera is paired: assume it is set to the current zone.
-    func resetToPhone() {
-        phoneZone = .current
-        setCameraZone(phoneZone)
+    /// The camera is set to the phone's zone: at pairing, or after the user updates it.
+    func markCameraMatchesPhone() {
+        refreshPhoneZone()
+        setCameraOffset(phoneZone.secondsFromGMT())
     }
 
-    /// The user updated the camera's time zone.
-    func confirmCameraUpdated() {
-        setCameraZone(phoneZone)
+    func forgetCamera() {
+        setCameraOffset(nil)
     }
 
-    /// Re-reads the phone's zone and notifies once per new offset.
-    func check() async {
-        phoneZone = .current
-        guard needsCameraUpdate,
-              defaults.object(forKey: Keys.notifiedOffset) as? Int != phoneZone.secondsFromGMT else { return }
-        defaults.set(phoneZone.secondsFromGMT, forKey: Keys.notifiedOffset)
-
-        let content = UNMutableNotificationContent()
-        content.title = "Update your camera's time zone"
-        content.body = "Your phone is now on \(phoneZone.cityName) time (\(phoneZone.offsetText)). "
-            + "On the camera, open Date/Time/Zone so photo times stay correct. Locations are unaffected."
-        let request = UNNotificationRequest(identifier: "timezone", content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
-    }
-
-    /// Re-checks whenever the system time zone changes while the app runs.
+    /// Checks at launch (including background relaunches) and whenever the
+    /// time zone changes. `significantTimeChangeNotification` is also delivered
+    /// on resume if the change happened while the app was suspended, e.g. when
+    /// a significant location change wakes it after a flight.
     func monitor() async {
         await check()
-        for await _ in NotificationCenter.default.notifications(named: .NSSystemTimeZoneDidChange) {
+        async let zoneChanges: Void = checkOnEach(.NSSystemTimeZoneDidChange)
+        async let timeChanges: Void = checkOnEach(UIApplication.significantTimeChangeNotification)
+        _ = await (zoneChanges, timeChanges)
+    }
+
+    private func checkOnEach(_ name: Notification.Name) async {
+        for await _ in NotificationCenter.default.notifications(named: name) {
             await check()
         }
     }
@@ -94,10 +62,43 @@ final class TimeZoneMonitor {
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 
-    private func setCameraZone(_ zone: Zone) {
-        cameraZone = zone
-        defaults.set(zone.identifier, forKey: Keys.cameraZoneID)
-        defaults.set(zone.secondsFromGMT, forKey: Keys.cameraOffset)
+    /// Notifies once per new offset.
+    private func check() async {
+        refreshPhoneZone()
+        let offset = phoneZone.secondsFromGMT()
+        guard needsCameraUpdate, defaults.object(forKey: Keys.notifiedOffset) as? Int != offset else { return }
+        defaults.set(offset, forKey: Keys.notifiedOffset)
+
+        let content = UNMutableNotificationContent()
+        content.title = "Update your camera's time zone"
+        content.body = "Your phone is now on \(Self.city(phoneZone)) time (\(Self.offsetText(offset))). "
+            + "On the camera, open Date/Time/Zone so photo times stay correct. Locations are unaffected."
+        let request = UNNotificationRequest(identifier: "timezone", content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    private func refreshPhoneZone() {
+        let current = TimeZone.current
+        if current != phoneZone { phoneZone = current }
+    }
+
+    private func setCameraOffset(_ offset: Int?) {
+        cameraOffset = offset
+        defaults.set(offset, forKey: Keys.cameraOffset)
         defaults.removeObject(forKey: Keys.notifiedOffset)
+    }
+
+    // MARK: Formatting
+
+    /// "UTC+5:30", matching the camera's Date/Time/Zone menu (Foundation would say "GMT").
+    static func offsetText(_ seconds: Int) -> String {
+        let minutes = abs(seconds) / 60
+        let text = "UTC\(seconds < 0 ? "−" : "+")\(minutes / 60)"
+        return minutes % 60 == 0 ? text : text + String(format: ":%02d", minutes % 60)
+    }
+
+    /// Localized city for a zone, e.g. "Lisbon".
+    static func city(_ zone: TimeZone) -> String {
+        Date.now.formatted(Date.FormatStyle(timeZone: zone).timeZone(.exemplarLocation))
     }
 }

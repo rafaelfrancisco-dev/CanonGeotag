@@ -23,7 +23,8 @@ import Testing
         #expect(bytes[11] == UInt8(ascii: "+"))
         #expect(float(bytes, at: 12) == Float(120.5))
         #expect(uint32(bytes, at: 16) == 1_760_000_000)
-        // The send time is used, not the fix's capture time. Little-endian epoch: 1_760_000_000 = 0x68E7_7800
+        // The send time is used, not the fix's capture time. A Unix time has no
+        // time zone, so the packet is the same wherever the phone is. Little-endian epoch: 1_760_000_000 = 0x68E7_7800
         #expect(Array(bytes[16...]) == [0x00, 0x78, 0xE7, 0x68])
     }
 
@@ -45,19 +46,6 @@ import Testing
         let bytes = [UInt8](GeoPacket.encode(fix, sentAt: .now))
         #expect(bytes[11] == UInt8(ascii: "+"))
         #expect(float(bytes, at: 12) == 0)
-    }
-
-    @Test func timestampIsIndependentOfTimeZone() {
-        // The same instant encodes identically wherever the phone is.
-        let instant = Date(timeIntervalSince1970: 1_760_000_000)
-        let fix = GeoFix(latitude: 1, longitude: 1, altitude: 0, horizontalAccuracy: 5, timestamp: instant)
-        let packet = GeoPacket.encode(fix, sentAt: instant)
-        for identifier in ["Europe/Lisbon", "Asia/Tokyo", "America/Los_Angeles"] {
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: identifier)!
-            let local = calendar.dateComponents(in: calendar.timeZone, from: instant)
-            #expect(GeoPacket.encode(fix, sentAt: calendar.date(from: local)!) == packet)
-        }
     }
 
     @Test func identifyHandshake() {

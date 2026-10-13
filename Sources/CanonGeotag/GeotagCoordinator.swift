@@ -111,10 +111,7 @@ final class GeotagCoordinator {
             for await event in ble.events { handle(event) }
         })
         listeners.append(Task {
-            for await fix in location.fixes {
-                sessionInput?.yield(.fix(fix))
-                await timeZone.check() // arriving somewhere new wakes us via significant change
-            }
+            for await fix in location.fixes { sessionInput?.yield(.fix(fix)) }
         })
         listeners.append(Task { await timeZone.monitor() })
 
@@ -137,7 +134,7 @@ final class GeotagCoordinator {
         cameraID = camera.id
         cameraName = camera.name
         state = .connecting
-        timeZone.resetToPhone()
+        timeZone.markCameraMatchesPhone()
         record("Pairing with \(camera.name)")
         ble.connect(to: camera.id)
     }
@@ -146,6 +143,7 @@ final class GeotagCoordinator {
         guard let cameraID else { return }
         endSession()
         ble.cancelConnection(to: cameraID)
+        timeZone.forgetCamera()
         self.cameraID = nil
         cameraName = nil
         defaults.set(false, forKey: Keys.paired)

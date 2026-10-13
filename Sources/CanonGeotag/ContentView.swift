@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if coordinator.timeZone.needsCameraUpdate, coordinator.cameraName != nil {
+                if coordinator.timeZone.needsCameraUpdate {
                     timeZoneSection
                 }
                 cameraSection
@@ -53,14 +53,16 @@ struct ContentView: View {
     }
 
     private var timeZoneSection: some View {
-        let zone = coordinator.timeZone.phoneZone
+        let monitor = coordinator.timeZone
+        let phone = TimeZoneMonitor.offsetText(monitor.phoneZone.secondsFromGMT())
+        let camera = monitor.cameraOffset.map(TimeZoneMonitor.offsetText) ?? ""
         return Section {
             VStack(alignment: .leading, spacing: 8) {
                 Label("Update the camera's time zone", systemImage: "clock.badge.exclamationmark")
                     .font(.headline)
-                Text("Your phone is on \(zone.cityName) time (\(zone.offsetText)), but the camera was last set to \(coordinator.timeZone.cameraZone.offsetText). On the camera, open **Menu → Set-up → Date/Time/Zone** and choose the new zone (or toggle daylight saving). Geotags are correct either way, but photo times use the camera's clock.")
+                Text("Your phone is on \(TimeZoneMonitor.city(monitor.phoneZone)) time (\(phone)), but the camera was last set to \(camera). On the camera, open **Menu → Set-up → Date/Time/Zone** and choose the new zone (or toggle daylight saving). Geotags are correct either way, but photo times use the camera's clock.")
                     .font(.callout)
-                Button("I've Updated the Camera") { coordinator.timeZone.confirmCameraUpdated() }
+                Button("I've Updated the Camera") { monitor.markCameraMatchesPhone() }
                     .buttonStyle(.glassProminent)
             }
         }
