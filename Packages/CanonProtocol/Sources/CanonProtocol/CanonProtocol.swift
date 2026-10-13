@@ -56,11 +56,17 @@ public struct GeoFix: Sendable, Hashable, Codable {
 ///     u8  'E' | 'W',  f32 |longitude|
 ///     u8  '+' | '-',  f32 |elevation m|
 ///     u32 Unix time (UTC seconds)
+///
+/// The time is absolute UTC, so it does not depend on any time zone. The
+/// camera records it as the EXIF GPS date/time. Pass the time of sending
+/// (as Canon Camera Connect does), not the fix's capture time: a
+/// significant-change fix can be hours old while still being the best known
+/// position.
 public enum GeoPacket {
     public static let header: UInt8 = 0x04
     public static let length = 20
 
-    public static func encode(_ fix: GeoFix) -> Data {
+    public static func encode(_ fix: GeoFix, sentAt date: Date) -> Data {
         let altitude = fix.altitude ?? 0
         var data = Data(capacity: length)
         data.append(header)
@@ -70,7 +76,7 @@ public enum GeoPacket {
         data.appendLittleEndian(Float(abs(fix.longitude)))
         data.append(UInt8(ascii: altitude < 0 ? "-" : "+"))
         data.appendLittleEndian(Float(abs(altitude)))
-        data.appendLittleEndian(UInt32(clamping: Int64(fix.timestamp.timeIntervalSince1970.rounded(.down))))
+        data.appendLittleEndian(UInt32(clamping: Int64(date.timeIntervalSince1970.rounded(.down))))
         return data
     }
 }

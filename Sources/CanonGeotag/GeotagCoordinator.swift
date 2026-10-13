@@ -31,6 +31,7 @@ final class GeotagCoordinator {
 
     let ble = CameraBLEManager()
     let location = LocationProvider()
+    let timeZone = TimeZoneMonitor()
 
     private(set) var state: ConnectionState = .noCamera
     private(set) var lastSent: GeoFix?
@@ -110,8 +111,12 @@ final class GeotagCoordinator {
             for await event in ble.events { handle(event) }
         })
         listeners.append(Task {
-            for await fix in location.fixes { sessionInput?.yield(.fix(fix)) }
+            for await fix in location.fixes {
+                sessionInput?.yield(.fix(fix))
+                await timeZone.check() // arriving somewhere new wakes us via significant change
+            }
         })
+        listeners.append(Task { await timeZone.monitor() })
 
         location.start()
         ble.activate()
@@ -121,6 +126,7 @@ final class GeotagCoordinator {
 
     func beginPairing() {
         location.requestAuthorization()
+        Task { await timeZone.requestNotificationPermission() }
         ble.startScan()
     }
 
@@ -131,6 +137,7 @@ final class GeotagCoordinator {
         cameraID = camera.id
         cameraName = camera.name
         state = .connecting
+        timeZone.resetToPhone()
         record("Pairing with \(camera.name)")
         ble.connect(to: camera.id)
     }
@@ -321,7 +328,7 @@ final class GeotagCoordinator {
             return
         }
         do {
-            try await link.write(GeoPacket.encode(fix), to: CanonUUID.geoData)
+            try await link.write(GeoPacket.encode(fix, sentAt: .now), to: CanonUUID.geoData)
             lastSent = fix
             lastSentDate = .now
             record("Sent \(fix.latitude.formatted(.number.precision(.fractionLength(5)))), "

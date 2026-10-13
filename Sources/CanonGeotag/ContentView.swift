@@ -9,6 +9,9 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if coordinator.timeZone.needsCameraUpdate, coordinator.cameraName != nil {
+                    timeZoneSection
+                }
                 cameraSection
                 locationSection
                 modeSection
@@ -45,6 +48,20 @@ struct ContentView: View {
                 Button("Forget Camera", systemImage: "trash", role: .destructive) {
                     coordinator.forgetCamera()
                 }
+            }
+        }
+    }
+
+    private var timeZoneSection: some View {
+        let zone = coordinator.timeZone.phoneZone
+        return Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Update the camera's time zone", systemImage: "clock.badge.exclamationmark")
+                    .font(.headline)
+                Text("Your phone is on \(zone.cityName) time (\(zone.offsetText)), but the camera was last set to \(coordinator.timeZone.cameraZone.offsetText). On the camera, open **Menu → Set-up → Date/Time/Zone** and choose the new zone (or toggle daylight saving). Geotags are correct either way, but photo times use the camera's clock.")
+                    .font(.callout)
+                Button("I've Updated the Camera") { coordinator.timeZone.confirmCameraUpdated() }
+                    .buttonStyle(.glassProminent)
             }
         }
     }
@@ -130,6 +147,7 @@ struct PairingView: View {
                     Text("2. Choose **Connect to smartphone → Add a device to connect**.")
                     Text("3. When the camera shows its name, select it below.")
                     Text("4. Confirm the pairing on the camera when asked.")
+                    Text("5. In **Wireless features → GPS device settings**, set **Select GPS device** to **Smartphone**.")
                 }
                 Section("Nearby cameras") {
                     if coordinator.ble.discovered.isEmpty {

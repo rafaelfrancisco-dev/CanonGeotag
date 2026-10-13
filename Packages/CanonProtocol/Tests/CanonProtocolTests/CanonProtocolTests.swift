@@ -11,8 +11,8 @@ import Testing
 
     @Test func geoPacketNorthEast() {
         let fix = GeoFix(latitude: 38.7223, longitude: 9.1393, altitude: 120.5,
-                         horizontalAccuracy: 10, timestamp: Date(timeIntervalSince1970: 1_760_000_000))
-        let bytes = [UInt8](GeoPacket.encode(fix))
+                         horizontalAccuracy: 10, timestamp: Date(timeIntervalSince1970: 1_000))
+        let bytes = [UInt8](GeoPacket.encode(fix, sentAt: Date(timeIntervalSince1970: 1_760_000_000)))
 
         #expect(bytes.count == GeoPacket.length && bytes.count == 20)
         #expect(bytes[0] == 0x04)
@@ -23,14 +23,14 @@ import Testing
         #expect(bytes[11] == UInt8(ascii: "+"))
         #expect(float(bytes, at: 12) == Float(120.5))
         #expect(uint32(bytes, at: 16) == 1_760_000_000)
-        // Little-endian epoch: 1_760_000_000 = 0x68E7_7800
+        // The send time is used, not the fix's capture time. Little-endian epoch: 1_760_000_000 = 0x68E7_7800
         #expect(Array(bytes[16...]) == [0x00, 0x78, 0xE7, 0x68])
     }
 
     @Test func geoPacketSouthWestBelowSeaLevel() {
         let fix = GeoFix(latitude: -33.86, longitude: -151.2, altitude: -12,
                          horizontalAccuracy: 5, timestamp: Date(timeIntervalSince1970: 0))
-        let bytes = [UInt8](GeoPacket.encode(fix))
+        let bytes = [UInt8](GeoPacket.encode(fix, sentAt: .now))
 
         #expect(bytes[1] == UInt8(ascii: "S"))
         #expect(float(bytes, at: 2) == Float(33.86))
@@ -42,9 +42,22 @@ import Testing
 
     @Test func unknownAltitudeIsZero() {
         let fix = GeoFix(latitude: 1, longitude: 1, altitude: nil, horizontalAccuracy: 5, timestamp: .now)
-        let bytes = [UInt8](GeoPacket.encode(fix))
+        let bytes = [UInt8](GeoPacket.encode(fix, sentAt: .now))
         #expect(bytes[11] == UInt8(ascii: "+"))
         #expect(float(bytes, at: 12) == 0)
+    }
+
+    @Test func timestampIsIndependentOfTimeZone() {
+        // The same instant encodes identically wherever the phone is.
+        let instant = Date(timeIntervalSince1970: 1_760_000_000)
+        let fix = GeoFix(latitude: 1, longitude: 1, altitude: 0, horizontalAccuracy: 5, timestamp: instant)
+        let packet = GeoPacket.encode(fix, sentAt: instant)
+        for identifier in ["Europe/Lisbon", "Asia/Tokyo", "America/Los_Angeles"] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: identifier)!
+            let local = calendar.dateComponents(in: calendar.timeZone, from: instant)
+            #expect(GeoPacket.encode(fix, sentAt: calendar.date(from: local)!) == packet)
+        }
     }
 
     @Test func identifyHandshake() {

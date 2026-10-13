@@ -27,7 +27,7 @@ No existing iOS implementation was found. The Canon "smart device" BLE protocol 
   - `N`/`S` and `|lat|` as Float32
   - `E`/`W` and `|lon|` as Float32
   - `+`/`-` and `|alt|` as Float32
-  - Unix time (UTC) as UInt32
+  - Unix time (UTC) as UInt32, taken when the packet is sent (see *Time handling*)
 
 ### Background auto-start
 
@@ -37,6 +37,13 @@ Two CoreBluetooth mechanisms work together:
 2. **State restoration.** The central has a restore identifier, so the pending connection survives iOS terminating the app. iOS relaunches the app in the background, and it rebuilds the central in `didFinishLaunching` and resumes.
 
 Significant-location-change monitoring also wakes or relaunches the app after the phone moves about 500 m.
+
+### Time handling
+
+- **The location timestamp is absolute UTC.** A Unix time has no time zone, so crossing zones never affects the packet. The R7 shows it as *UTC* in its shooting info and stores it as the EXIF GPS date/time.
+- **It is the time of sending, not the fix's capture time.** Canon Camera Connect and [camera-gps](https://github.com/mcfitz2/camera-gps) do the same. A significant-change fix can be hours old while still being the best known position, and its capture time would put the wrong GPS time in photos.
+- **The camera's own clock can't be set over Bluetooth.** Photo times (EXIF `DateTimeOriginal`/`OffsetTime`) come from the camera's *Date/Time/Zone* setting. No public implementation documents a BLE command to set it, and Canon's own app only offers a manual update.
+- **The app reminds you after a zone change instead.** When the phone's UTC offset changes (travel or daylight saving), CanonGeotag shows a banner and posts one notification asking you to update *Menu → Set-up → Date/Time/Zone* on the camera. Arriving somewhere new wakes the app through significant location changes, so the reminder also arrives in the background. `TimeZoneMonitor.swift` assumes the camera matches the phone at pairing time.
 
 ### Location modes (selectable in the app)
 
@@ -67,6 +74,7 @@ Sources/CanonGeotag/
   PeripheralLink.swift        async/await wrapper around a connected CBPeripheral
   LocationProvider.swift      Significant changes + on-demand GPS
   GeotagCoordinator.swift     Connection session, handshake, location → camera
+  TimeZoneMonitor.swift       Reminds you to update the camera's time zone after travel or DST
   EventLog.swift              Persistent activity log (for checking background behaviour)
   ContentView.swift           SwiftUI UI: status, pairing, mode picker, activity log
 ```
@@ -83,7 +91,8 @@ xtool dev run                                      # build, sign and install on 
 1. Open the app and tap **Allow Location**. Accept *When In Use*, then *Always*.
 2. On the R7, go to **Menu → Wireless features → Bluetooth settings** and turn Bluetooth on. Then choose **Connect to smartphone → Add a device**.
 3. In the app, tap **Pair Camera**, select the camera, and confirm on the camera.
-4. From then on, turning on the camera connects it automatically, and the app sends location while the camera is on.
+4. On the camera, go to **Wireless features → GPS device settings** and set **Select GPS device** to **Smartphone**. Without this, the camera ignores phone location.
+5. From then on, turning on the camera connects it automatically, and the app sends location while the camera is on.
 
 ## Testing background auto-start
 
@@ -97,6 +106,6 @@ xtool dev run                                      # build, sign and install on 
 
 - **Not yet tested on hardware.** R7 compatibility is inferred from furble's tested list, which includes the R6 Mark II from the same generation.
 - **Single phone pairing.** The R7 pairs with one phone app at a time, so pairing CanonGeotag likely replaces the Canon Camera Connect pairing.
-- **Timestamps are sent as UTC.** This follows furble. Check how the R7's time-zone setting interacts with them.
+- **Clock reminder is manual.** After the time-zone reminder, the camera's clock still has to be updated by hand. A BLE command for this is unknown.
 - **Battery saver accuracy.** In this mode, positions can be about 500 m off.
 - **Free Apple ID signing.** With xtool and a free Apple ID, the install expires after 7 days.
