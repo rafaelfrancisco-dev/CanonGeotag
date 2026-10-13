@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>CanonGeotag</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+        <string>location</string>
+    </array>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>CanonGeotag connects to your Canon camera over Bluetooth to send it your location so photos are geotagged.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Your location is sent to your Canon camera so it can geotag your photos.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Allow "Always" so CanonGeotag can keep geotagging your photos in the background, even when the app isn't open. It uses low-power significant location changes to save battery.</string>
+</dict>
+</plist>
