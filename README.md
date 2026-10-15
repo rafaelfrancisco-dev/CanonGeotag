@@ -107,7 +107,7 @@ xtool dev run                                      # build, sign and install on 
 
 ## Status and caveats
 
-- **Not yet tested on hardware.** R7 compatibility is inferred from furble's tested list, which includes the R6 Mark II from the same generation.
+- **Tested on an EOS R7 (October 2026).** Automatic background connection and geotagging work: the camera connects when switched on and tags photos with the phone's location. Other bodies are untested; furble's tested list suggests the same protocol works across recent EOS models, including the R6 Mark II.
 - **Single phone pairing.** The R7 pairs with one phone app at a time, so pairing CanonGeotag likely replaces the Canon Camera Connect pairing.
 - **Clock reminder is manual.** After the time-zone reminder, the camera's clock still has to be updated by hand. A BLE command for this is unknown.
 - **Battery saver accuracy.** In this mode, positions can be about 500 m off.
