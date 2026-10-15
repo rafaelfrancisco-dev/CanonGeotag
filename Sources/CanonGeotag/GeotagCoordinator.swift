@@ -6,7 +6,6 @@ enum ConnectionState: Equatable {
     case noCamera
     case waiting
     case connecting
-    case confirmOnCamera
     case connected(geotagging: Bool)
     case failed(String)
 
@@ -15,7 +14,6 @@ enum ConnectionState: Equatable {
         case .noCamera: "No camera paired"
         case .waiting: "Waiting for camera"
         case .connecting: "Connecting…"
-        case .confirmOnCamera: "Confirm pairing on the camera"
         case .connected(true): "Geotagging"
         case .connected(false): "Connected, waiting for the camera"
         case .failed(let reason): reason
@@ -63,7 +61,6 @@ final class GeotagCoordinator {
         static let mode = "locationMode"
         static let cameraID = "cameraID"
         static let cameraName = "cameraName"
-        static let paired = "cameraPairingAccepted"
         static let appID = "appIdentity"
     }
 
@@ -130,7 +127,6 @@ final class GeotagCoordinator {
     func pair(with camera: DiscoveredCamera) {
         ble.stopScan()
         if let cameraID, cameraID != camera.id { forgetCamera() }
-        defaults.set(false, forKey: Keys.paired)
         cameraID = camera.id
         cameraName = camera.name
         state = .connecting
@@ -146,7 +142,6 @@ final class GeotagCoordinator {
         timeZone.forgetCamera()
         self.cameraID = nil
         cameraName = nil
-        defaults.set(false, forKey: Keys.paired)
         state = .noCamera
         record("Forgot camera")
     }
@@ -163,7 +158,7 @@ final class GeotagCoordinator {
         case .power(let power):
             record("Bluetooth \(power)")
             if power == .poweredOn, let cameraID {
-                ble.connect(to: cameraID)
+                ble.watch(for: cameraID)
             } else if power != .poweredOn {
                 endSession()
                 if cameraID != nil { state = .waiting }
@@ -180,12 +175,20 @@ final class GeotagCoordinator {
             record("Camera disconnected" + (reason.map { ": \($0)" } ?? ""))
             endSession()
             state = .waiting
-            ble.connect(to: id) // re-arm the pending connection for auto-start
+            ble.watch(for: id) // wait for the camera to turn on again
 
         case .failedToConnect(let id, let reason):
             guard id == cameraID else { return }
             record("Connection failed" + (reason.map { ": \($0)" } ?? ""))
-            ble.connect(to: id)
+            ble.watch(for: id)
+
+        case .status(let id, let status):
+            guard id == cameraID else { return }
+            switch status {
+            case .off: record("Camera is off, waiting for it to turn on")
+            case .on: record("Camera turned on")
+            case .other(let byte): record("Camera status 0x\(String(byte, radix: 16)), connecting")
+            }
         }
     }
 
@@ -215,19 +218,12 @@ final class GeotagCoordinator {
                 try await link.write(write)
             }
 
-            let previouslyPaired = defaults.bool(forKey: Keys.paired)
-            if !previouslyPaired {
-                state = .confirmOnCamera
-                record("Waiting for confirmation on the camera")
-            }
-            switch await firstPairResult(pairing, within: .seconds(previouslyPaired ? 3 : 60)) {
-            case .rejected: throw BLEError.pairingRejected
-            case nil where !previouslyPaired: throw BLEError.pairingTimedOut
-            case .accepted, nil: break
-            }
-            if !previouslyPaired {
-                defaults.set(true, forKey: Keys.paired)
-                record("Pairing accepted")
+            // The camera is assumed to be paired already (for example through
+            // Canon Camera Connect's Bluetooth bond). Such a camera accepts the
+            // phone without asking and usually sends no result, so only a
+            // rejection stops the session.
+            if try await firstPairResult(pairing, within: .seconds(3)) == .rejected {
+                throw BLEError.pairingRejected
             }
 
             let geo = try await link.indications(from: CanonUUID.geoIndication)
@@ -337,21 +333,23 @@ final class GeotagCoordinator {
         }
     }
 
-    private func firstPairResult(_ stream: AsyncStream<Data>, within limit: Duration) async -> PairResult? {
-        await withTaskGroup(of: PairResult?.self) { group in
+    /// The camera's pairing result, or `nil` if it sends none within `limit`.
+    /// Throws if the camera disconnects first.
+    private func firstPairResult(_ stream: AsyncStream<Data>, within limit: Duration) async throws -> PairResult? {
+        try await withThrowingTaskGroup(of: PairResult?.self) { group in
             group.addTask {
                 for await data in stream {
                     if let result = PairResult(indication: data) { return result }
                 }
-                return nil
+                try Task.checkCancellation()
+                throw BLEError.disconnected // stream ended: link invalidated
             }
             group.addTask {
                 try? await Task.sleep(for: limit)
                 return nil
             }
-            let result = await group.next() ?? nil
-            group.cancelAll()
-            return result
+            defer { group.cancelAll() }
+            return try await group.next() ?? nil
         }
     }
 

@@ -7,7 +7,6 @@ nonisolated enum BLEError: LocalizedError, Sendable {
     case disconnected
     case missingCharacteristic(String)
     case pairingRejected
-    case pairingTimedOut
     case gatt(String)
 
     var errorDescription: String? {
@@ -17,7 +16,6 @@ nonisolated enum BLEError: LocalizedError, Sendable {
         case .disconnected: "Camera disconnected"
         case .missingCharacteristic(let uuid): "Camera is missing characteristic \(uuid)"
         case .pairingRejected: "Pairing was rejected on the camera"
-        case .pairingTimedOut: "Pairing was not confirmed on the camera"
         case .gatt(let message): message
         }
     }

@@ -13,7 +13,9 @@ public enum CanonUUID {
     public static let identity = canon(0x0001_000A)
 
     public static let modeService = canon(0x0003_0000)
-    /// Camera mode (0xf307).
+    /// Camera mode (0xf307). furble writes 0x02 (shooting) for remote
+    /// shutter control. Geotagging doesn't need it, and switching modes
+    /// turns on a camera whose power switch is off, so it isn't written.
     public static let mode = canon(0x0003_0010)
 
     public static let geoService = canon(0x0004_0000)
@@ -28,6 +30,42 @@ public enum CanonUUID {
         let hex = String(prefix, radix: 16, uppercase: true)
         return String(repeating: "0", count: 8 - hex.count) + hex + "-0000-1000-0000-D8492FFFA821"
     }
+}
+
+/// Camera power state from its advertisement.
+///
+/// With Bluetooth enabled, the camera keeps advertising while its power
+/// switch is off, and *any* connection turns it on. The manufacturer data
+/// tells the two apart. Captured from an R7:
+///
+///     a9 01  01 f7 32 35 26  05   switched off (sparse, ~1 every 30–70 s)
+///     a9 01  01 f7 32 35 26  02   switched on  (~4 per second)
+///
+/// `a9 01` is Canon's company ID (0x01A9, little-endian). The last byte is
+/// the status.
+public enum CameraStatus: Sendable, Equatable {
+    case off
+    case on
+    case other(UInt8)
+
+    static let companyID: [UInt8] = [0xA9, 0x01]
+    static let statusOffset = 7
+
+    /// `nil` if the data isn't Canon's or is too short.
+    public init?(manufacturerData data: Data) {
+        let bytes = [UInt8](data)
+        guard bytes.count > Self.statusOffset, Array(bytes.prefix(2)) == Self.companyID else { return nil }
+        switch bytes[Self.statusOffset] {
+        case 0x05: self = .off
+        case 0x02: self = .on
+        case let byte: self = .other(byte)
+        }
+    }
+
+    /// Connecting is safe unless the camera reports it's switched off.
+    /// Unknown states count as on, so an unrecognised status can't stop
+    /// geotagging, and the app logs it.
+    public var allowsConnecting: Bool { self != .off }
 }
 
 /// A position to send to the camera.
@@ -109,7 +147,6 @@ public enum Handshake {
     /// Writes that complete the connection once pairing is accepted.
     public static let finish = [
         HandshakeWrite(CanonUUID.identity, [0x01]),
-        HandshakeWrite(CanonUUID.mode, [0x02]), // shooting mode
     ]
 
     /// Reply to a `GeoIndication.request`.

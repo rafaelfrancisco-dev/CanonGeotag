@@ -43,7 +43,6 @@ struct ContentView: View {
             }
             if coordinator.cameraName == nil {
                 Button("Pair Camera", systemImage: "plus") { isPairing = true }
-                    .buttonStyle(.glassProminent)
             } else {
                 Button("Forget Camera", systemImage: "trash", role: .destructive) {
                     coordinator.forgetCamera()
@@ -57,29 +56,31 @@ struct ContentView: View {
         let phone = TimeZoneMonitor.offsetText(monitor.phoneZone.secondsFromGMT())
         let camera = monitor.cameraOffset.map(TimeZoneMonitor.offsetText) ?? ""
         return Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Update the camera's time zone", systemImage: "clock.badge.exclamationmark")
-                    .font(.headline)
-                Text("Your phone is on \(TimeZoneMonitor.city(monitor.phoneZone)) time (\(phone)), but the camera was last set to \(camera). On the camera, open **Menu → Set-up → Date/Time/Zone** and choose the new zone (or toggle daylight saving). Geotags are correct either way, but photo times use the camera's clock.")
-                    .font(.callout)
-                Button("I've Updated the Camera") { monitor.markCameraMatchesPhone() }
-                    .buttonStyle(.glassProminent)
+            Label {
+                VStack(alignment: .leading) {
+                    Text("Update the camera's time zone")
+                        .font(.headline)
+                    Text("Your phone is on \(TimeZoneMonitor.city(monitor.phoneZone)) time (\(phone)), but the camera was last set to \(camera). On the camera, open **Menu → Set-up → Date/Time/Zone** and choose the new zone (or toggle daylight saving). Geotags are correct either way, but photo times use the camera's clock.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .foregroundStyle(.orange)
             }
+            Button("I've Updated the Camera", systemImage: "checkmark") { monitor.markCameraMatchesPhone() }
         }
     }
 
     private var locationSection: some View {
         Section {
             if !coordinator.location.isAuthorizedAlways {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Allow location access “Always” so photos are geotagged while CanonGeotag runs in the background.")
-                        .font(.callout)
-                    if coordinator.location.authorization == .denied {
-                        Button("Open Settings") { openSettings() }
-                    } else {
-                        Button("Allow Location") { coordinator.location.requestAuthorization() }
-                            .buttonStyle(.glassProminent)
-                    }
+                Label("Allow location access “Always” so photos are geotagged while CanonGeotag runs in the background.",
+                      systemImage: "location.circle")
+                if coordinator.location.authorization == .denied {
+                    Button("Open Settings", systemImage: "gear") { openSettings() }
+                } else {
+                    Button("Allow Location", systemImage: "location") { coordinator.location.requestAuthorization() }
                 }
             }
             if !coordinator.location.isPrecise {
@@ -123,7 +124,7 @@ struct ContentView: View {
         switch coordinator.state {
         case .noCamera: "camera"
         case .waiting: "camera.badge.clock"
-        case .connecting, .confirmOnCamera: "antenna.radiowaves.left.and.right"
+        case .connecting: "antenna.radiowaves.left.and.right"
         case .connected(true): "location.circle.fill"
         case .connected(false): "checkmark.circle"
         case .failed: "exclamationmark.triangle"
@@ -144,14 +145,7 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("On the camera") {
-                    Text("1. Open **Menu → Wireless features → Bluetooth settings** and turn Bluetooth on.")
-                    Text("2. Choose **Connect to smartphone → Add a device to connect**.")
-                    Text("3. When the camera shows its name, select it below.")
-                    Text("4. Confirm the pairing on the camera when asked.")
-                    Text("5. In **Wireless features → GPS device settings**, set **Select GPS device** to **Smartphone**.")
-                }
-                Section("Nearby cameras") {
+                Section {
                     if coordinator.ble.discovered.isEmpty {
                         HStack {
                             ProgressView()
@@ -163,9 +157,22 @@ struct PairingView: View {
                             coordinator.pair(with: camera)
                             dismiss()
                         } label: {
-                            LabeledContent(camera.name, value: "\(camera.rssi) dBm")
+                            LabeledContent(camera.name, value: camera.rssi.map { "\($0) dBm" } ?? "Connected")
                         }
                     }
+                } header: {
+                    Text("Cameras")
+                } footer: {
+                    Text("Already paired with Canon Camera Connect? Turn the camera on and it appears here. Then confirm on the camera if it asks.")
+                }
+                Section("New camera") {
+                    step(1, "Open **Menu → Wireless features → Bluetooth settings** and turn Bluetooth on.")
+                    step(2, "Choose **Connect to smartphone → Add a device to connect**.")
+                    step(3, "When the camera shows its name, select it above.")
+                    step(4, "Confirm the pairing on the camera when asked.")
+                }
+                Section("Then, on the camera") {
+                    Text("In **Wireless features → GPS device settings**, set **Select GPS device** to **Smartphone**.")
                 }
             }
             .navigationTitle("Pair Camera")
@@ -176,7 +183,26 @@ struct PairingView: View {
                 }
             }
             .onAppear { coordinator.beginPairing() }
+            .task {
+                // Camera Connect may connect the camera while this sheet is open.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    coordinator.ble.addConnectedCameras()
+                }
+            }
             .onDisappear { coordinator.ble.stopScan() }
+        }
+    }
+
+    /// A numbered step with a hanging indent. The number is kept out of the
+    /// text so a leading "1. " isn't read as Markdown list syntax.
+    private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("\(number).")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -186,7 +212,7 @@ struct ActivityLogView: View {
 
     var body: some View {
         List(coordinator.log.reversed()) { entry in
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading) {
                 Text(entry.message)
                 Text(entry.date, format: .dateTime.day().month().hour().minute().second())
                     .font(.caption)

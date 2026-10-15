@@ -5,7 +5,9 @@ import CanonProtocol
 nonisolated struct DiscoveredCamera: Identifiable, Hashable, Sendable {
     let id: UUID
     let name: String
-    let rssi: Int
+    /// `nil` for a camera found already connected to this iPhone (for
+    /// example by Canon Camera Connect), which doesn't advertise.
+    let rssi: Int?
 }
 
 nonisolated enum BluetoothPower: Sendable, Equatable {
@@ -14,10 +16,15 @@ nonisolated enum BluetoothPower: Sendable, Equatable {
 
 /// Owns the `CBCentralManager`.
 ///
-/// Background auto-start works the same way as Sony's app: the central is
-/// created with a restore identifier and keeps a *pending* `connect` to the
-/// paired camera. Pending connects never time out, so when the camera powers
-/// on iOS connects to it and relaunches the app in the background if needed.
+/// Background auto-start: the central is created with a restore identifier
+/// and *watches* for the paired camera with a scan filtered by the Canon
+/// service, which iOS keeps running (and relaunches the app for) in the
+/// background.
+///
+/// It can't keep a pending `connect` the way Sony's app does: a Canon body
+/// with Bluetooth enabled keeps advertising while switched off, and any
+/// connection turns it on. So the app connects only once the advertisement's
+/// status byte says the camera is on (see `CameraStatus`).
 @Observable
 final class CameraBLEManager: NSObject {
     nonisolated enum Event: Sendable {
@@ -25,6 +32,8 @@ final class CameraBLEManager: NSObject {
         case connected(UUID)
         case disconnected(UUID, reason: String?)
         case failedToConnect(UUID, reason: String?)
+        /// The watched camera's advertised status changed.
+        case status(UUID, CameraStatus)
     }
 
     static let restoreIdentifier = "com.rafaelfrancisco.CanonGeotag.central"
@@ -39,6 +48,12 @@ final class CameraBLEManager: NSObject {
     @ObservationIgnored private var peripherals: [UUID: CBPeripheral] = [:]
     @ObservationIgnored private var links: [UUID: PeripheralLink] = [:]
     @ObservationIgnored private var restoredConnected: Set<UUID> = []
+    /// Restored pending connects from builds that connected blindly; cancelled
+    /// once powered on, since completing them would turn the camera on.
+    @ObservationIgnored private var restoredConnecting: Set<UUID> = []
+    /// The paired camera, while waiting for it to turn on.
+    @ObservationIgnored private var watchedID: UUID?
+    @ObservationIgnored private var lastStatus: CameraStatus?
 
     override init() {
         (events, eventContinuation) = AsyncStream.makeStream(of: Event.self)
@@ -55,7 +70,8 @@ final class CameraBLEManager: NSObject {
         ])
     }
 
-    /// Issues a pending connection that survives app suspension.
+    /// Connects now. Only for a camera known to be on, such as one picked in
+    /// the pairing list; otherwise use `watch(for:)`.
     func connect(to id: UUID) {
         guard let central, central.state == .poweredOn else { return }
         let peripheral = peripherals[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first
@@ -71,7 +87,41 @@ final class CameraBLEManager: NSObject {
         }
     }
 
+    /// Waits for the camera to turn on, then connects. Survives suspension and
+    /// termination through state restoration.
+    func watch(for id: UUID) {
+        watchedID = id
+        lastStatus = nil
+        guard let central, central.state == .poweredOn else { return }
+        // A camera another app (Canon Camera Connect) has connected is on, but
+        // doesn't advertise.
+        let service = CBUUID(string: CanonUUID.primaryService)
+        if central.retrieveConnectedPeripherals(withServices: [service]).contains(where: { $0.identifier == id }) {
+            stopWatching()
+            connect(to: id)
+            return
+        }
+        startWatchScan()
+    }
+
+    private func stopWatching() {
+        watchedID = nil
+        if !isScanning { central?.stopScan() }
+    }
+
+    /// Scans for the Canon service. While pairing, the unfiltered pairing scan
+    /// covers it. In the background iOS reports each peripheral only once per
+    /// scan, so the scan is restarted after every "off" advertisement to hear
+    /// the next one.
+    private func startWatchScan() {
+        guard let central, central.state == .poweredOn, watchedID != nil, !isScanning else { return }
+        central.stopScan()
+        central.scanForPeripherals(withServices: [CBUUID(string: CanonUUID.primaryService)],
+                                   options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+    }
+
     func cancelConnection(to id: UUID) {
+        if watchedID == id { stopWatching() }
         links.removeValue(forKey: id)?.invalidate()
         if let peripheral = peripherals.removeValue(forKey: id) {
             central?.cancelPeripheralConnection(peripheral)
@@ -95,12 +145,28 @@ final class CameraBLEManager: NSObject {
         // No service filter: some bodies only advertise the Canon service while
         // in "Add a device" mode, so also accept anything named "EOS…".
         central.scanForPeripherals(withServices: nil)
+        addConnectedCameras()
+    }
+
+    /// Lists Canon cameras that another app, such as Canon Camera Connect,
+    /// already has connected. iOS shares the Bluetooth bond between apps, and
+    /// a connected camera stops advertising, so the scan alone never sees it.
+    func addConnectedCameras() {
+        guard let central, isScanning else { return }
+        let service = CBUUID(string: CanonUUID.primaryService)
+        for peripheral in central.retrieveConnectedPeripherals(withServices: [service])
+        where !discovered.contains(where: { $0.id == peripheral.identifier }) {
+            peripherals[peripheral.identifier] = peripheral
+            discovered.append(DiscoveredCamera(id: peripheral.identifier, name: peripheral.name ?? "Canon camera",
+                                               rssi: nil))
+        }
     }
 
     func stopScan() {
         guard isScanning else { return }
         central?.stopScan()
         isScanning = false
+        startWatchScan()
     }
 }
 
@@ -124,6 +190,10 @@ extension CameraBLEManager: @MainActor CBCentralManagerDelegate {
         eventContinuation.yield(.power(power))
 
         if power == .poweredOn {
+            for id in restoredConnecting {
+                if let peripheral = peripherals[id] { central.cancelPeripheralConnection(peripheral) }
+            }
+            restoredConnecting.removeAll()
             for id in restoredConnected { eventContinuation.yield(.connected(id)) }
             restoredConnected.removeAll()
         }
@@ -133,14 +203,21 @@ extension CameraBLEManager: @MainActor CBCentralManagerDelegate {
         let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
         for peripheral in restored {
             peripherals[peripheral.identifier] = peripheral
-            if peripheral.state == .connected {
-                restoredConnected.insert(peripheral.identifier)
+            switch peripheral.state {
+            case .connected: restoredConnected.insert(peripheral.identifier)
+            case .connecting: restoredConnecting.insert(peripheral.identifier)
+            default: break
             }
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        if peripheral.identifier == watchedID {
+            peripherals[peripheral.identifier] = peripheral
+            handleWatched(peripheral, advertisementData: advertisementData)
+        }
+        guard isScanning else { return }
         let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? ""
         let isCanon = services.contains(CBUUID(string: CanonUUID.primaryService)) || name.hasPrefix("EOS")
@@ -153,6 +230,22 @@ extension CameraBLEManager: @MainActor CBCentralManagerDelegate {
             discovered[index] = camera
         } else {
             discovered.append(camera)
+        }
+    }
+
+    private func handleWatched(_ peripheral: CBPeripheral, advertisementData: [String: Any]) {
+        let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
+        // Without manufacturer data the state is unknown; keep waiting.
+        guard let status = data.flatMap(CameraStatus.init(manufacturerData:)) else { return }
+        if status != lastStatus {
+            lastStatus = status
+            eventContinuation.yield(.status(peripheral.identifier, status))
+        }
+        if status.allowsConnecting {
+            stopWatching()
+            connect(to: peripheral.identifier)
+        } else {
+            startWatchScan()
         }
     }
 

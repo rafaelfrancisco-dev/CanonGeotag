@@ -21,7 +21,7 @@ No existing iOS implementation was found. The Canon "smart device" BLE protocol 
   - Primary `00010000`
   - Mode `00030000`
   - Location `00040000`
-- **Handshake:** identify the phone with its name and a persistent 16-byte ID, then wait for the user to confirm on the camera. Next, subscribe to location indications and switch the camera to shooting mode.
+- **Handshake:** identify the phone with its name and a persistent 16-byte ID, then wait up to 3 s for the pairing result. The app currently assumes the camera is already paired (for example through Canon Camera Connect), so only a rejection stops it, and no result counts as accepted. Next, subscribe to location indications. furble also switches the camera to shooting mode, but that turns on a camera whose power switch is off, and geotagging doesn't need it.
 - **Location packet:** 20 bytes, packed and little-endian, sent with write-with-response to `00040002` once the camera indicates `0x02` on `00040003`.
   - `0x04` header
   - `N`/`S` and `|lat|` as Float32
@@ -31,10 +31,13 @@ No existing iOS implementation was found. The Canon "smart device" BLE protocol 
 
 ### Background auto-start
 
-Two CoreBluetooth mechanisms work together:
+Sony's app keeps a pending `connect()` that completes when the camera turns on. That doesn't work for Canon. With Bluetooth enabled, the R7 keeps advertising while its power switch is off, and **any connection turns it on**. The app watches the advertisement instead:
 
-1. **Pending connection.** `CBCentralManager.connect()` never times out. When the R7 powers on, iOS connects and wakes the suspended app.
-2. **State restoration.** The central has a restore identifier, so the pending connection survives iOS terminating the app. iOS relaunches the app in the background, and it rebuilds the central in `didFinishLaunching` and resumes.
+1. **Status byte.** The manufacturer data ends in a status byte: `05` while switched off (one packet every 30–70 s) and `02` while on (about 4 a second), e.g. `a9 01 01 f7 32 35 26 02`. The app connects only when the status isn't `05`. See `CameraStatus` in `CanonProtocol`.
+2. **Background scan.** The app scans for the Canon primary service, which the camera advertises in both states, so iOS keeps the scan running in the background and wakes the app on a match. In the background iOS reports a peripheral only once per scan, so the app restarts the scan after each "off" packet. It wakes briefly about once a minute while the camera is off and in range.
+3. **State restoration.** The central has a restore identifier, so the scan survives iOS terminating the app. iOS relaunches the app in the background, and it rebuilds the central in `didFinishLaunching` and resumes.
+
+A camera that Canon Camera Connect already has connected doesn't advertise. The app checks for it among connected peripherals and connects directly.
 
 Significant-location-change monitoring also wakes or relaunches the app after the phone moves about 500 m.
 
@@ -100,7 +103,7 @@ xtool dev run                                      # build, sign and install on 
 
 1. Leave the app in the background, or restart the iPhone.
 2. Turn the camera off, then on.
-3. Open **Activity** in the app. You should see a background launch, *Camera connected*, *Camera accepted location* and *Sent …* entries.
+3. Open **Activity** in the app. You should see *Camera is off, waiting for it to turn on*, then *Camera turned on*, *Camera connected*, *Camera accepted location* and *Sent …* entries.
 
 ## Status and caveats
 

@@ -61,7 +61,7 @@ import Testing
     }
 
     @Test func finishAndEnable() {
-        #expect(Handshake.finish == [HandshakeWrite(CanonUUID.identity, [0x01]), HandshakeWrite(CanonUUID.mode, [0x02])])
+        #expect(Handshake.finish == [HandshakeWrite(CanonUUID.identity, [0x01])])
         #expect(Handshake.enableGeo == HandshakeWrite(CanonUUID.geoData, [0x01]))
     }
 
@@ -72,6 +72,17 @@ import Testing
         #expect(GeoIndication(indication: Data([0x03])) == .request)
         #expect(GeoIndication(indication: Data([0x02])) == .enabled)
         #expect(GeoIndication(indication: Data([0x07])) == .other(0x07))
+    }
+
+    @Test func cameraStatus() {
+        // Captured from an EOS R7 (switched off, then on).
+        #expect(CameraStatus(manufacturerData: Data([0xA9, 0x01, 0x01, 0xF7, 0x32, 0x35, 0x26, 0x05])) == .off)
+        #expect(CameraStatus(manufacturerData: Data([0xA9, 0x01, 0x01, 0xF7, 0x32, 0x35, 0x26, 0x02])) == .on)
+        #expect(CameraStatus(manufacturerData: Data([0xA9, 0x01, 0x01, 0xF7, 0x32, 0x35, 0x26, 0x09])) == .other(0x09))
+        #expect(CameraStatus(manufacturerData: Data([0x4C, 0x00, 0x01, 0xF7, 0x32, 0x35, 0x26, 0x02])) == nil)
+        #expect(CameraStatus(manufacturerData: Data([0xA9, 0x01, 0x01])) == nil)
+        #expect(!CameraStatus.off.allowsConnecting)
+        #expect(CameraStatus.on.allowsConnecting && CameraStatus.other(0x09).allowsConnecting)
     }
 
     private func float(_ bytes: [UInt8], at offset: Int) -> Float {
